@@ -1,158 +1,47 @@
-/**
+/*!
  * HoldDB.js wrapper to IndexedDB
+ * https://github.com/misamu/holddb.js
  *
+ * Licence: MIT
+ */
+
+/**
  * @author Misa Munde
- * @version: 0.1
+ * @version: 1.0
  *
  * Supported:
  * 	Chrome 48+
  * 	Firefox 45+
  */
 
-/* global IDBKeyRange, IDBObjectStore */
-
 /**
- * IDBFactory is the real type of this data
- * @typedef {{
- *		cmp: Function(string|number, string|number):number,
- *		deleteDatabase: Function(string),
- *		deleteDatabase: Function(string),
- *		open: Function(string, number):Promise,
- * }} indexedDB
+ * @typedef {IDBOpenDBRequest & {
+ *		holdDBStoreName: string
+ * }} holdDBIDBOpenDBRequest
  */
 
 /**
- * IDBFactory.open Promise then returns this object
- * @typedef {{
- *		close: Function,
- *		createIndex: Function,
- *		createObjectStore: Function,
- *		deleteObjectStore: Function,
- *		name: string,
- *		objectStoreNames: Array.<string>,
- *		onabort: null,
- *		onclose: null,
- *		onerror: null,
- *		onversionchange: null,
- *		transaction: Function():IDBTransaction,
- *		version: number
- * }} IDBDatabase
+ * @typedef {Event & {
+ *		target: holdDBIDBOpenDBRequest
+ * }} holdDBIDBOpenEvent
  */
 
 /**
- * IDBFactory.delete Promise then returns this object
- * @typedef {{
- *		timeStamp: number,
- *		type: string
- * }} IDBVersionChangeEvent
+ * @typedef {IDBVersionChangeEvent & {
+ *		target: holdDBIDBOpenDBRequest
+ * }} holdDBIDBVersionChangeEvent
  */
 
 /**
- * IDBDatabase.transaction returns this object
- * @typedef {{
- *		abort: Function
- *		db: IDBDatabase,
- *		objectStore: Function():IDBObjectStore,
- *		openCursor: Function():IDBRequest
- * }} IDBTransaction
- */
-
-/**
- * IDBTransaction.objectStore function returns this object
- * @typedef {{
- *		count: Function,
- *		delete: Function():IDBRequest,
- *		get: Function,
- *		getAll: Function,
- *		getAllKeys: Function,
- *		open: Function,
- *		openCursor: Function():IDBRequest,
- *		openKeyCursor: Function():IDBRequest,
- *		put: Function,
- *		index: Function():IDBIndex
- * }} IDBObjectStore
+ * @typedef {EventTarget & {
+ *		target: holdDBIDBOpenDBRequest
+ * }} holdDBIDBOpenDBRequestError
  */
 
 /**
  * @typedef {{
- *		error: DOMException,
- *		holdDB: {
- *			database: string,
- *			object: string,
- *			resolve: Function,
- *			reject: Function,
- *			upgraded: boolean|undefined
- *		},
- *		onabort: Function,
- *		onblocked: Function,
- *		onerror: Function,
- *		onsuccess: Function,
- *		onupgradeneeded: Function,
- *		readyState: string,
- *		result: *,
- *		source: IDBIndex|IDBObjectStore|IDBCursor|null,
- *		transaction: *|null
- * }} IDBOpenDBRequest
- */
-
-/**
- * @typedef {{
- *		count: Function,
- *		get: Function():IDBRequest,
- *		getAll: Function():IDBRequest,
- *		getAllKeys: Function,
- *		getKey: Function,
- *		openCursor: Function,
- *		openKeyCursor: Function,
- * }} IDBIndex
- */
-
-/**
- * @typedef {{
- *		bound: Function():IDBKeyRange,
- *		includes: Function():IDBKeyRange,
- *		only: Function():IDBKeyRange,
- *		lowerBound: Function():IDBKeyRange,
- *		upperBound: Function():IDBKeyRange
- * }} IDBKeyRange
- */
-
-/**
- * @typedef {{
- *		error: DOMException,
- *		onerror: null,
- *		onsuccess: null,
- *		readyState: null,
- *		result: null,
- *		source: null,
- *		transaction: null
- * }} IDBRequest
- */
-
-/**
- * @typedef {{
- *		advance: Function,
- *		continue: Function,
- *		delete: Function,
- *		update: Function,
- *		value: Object|string|null,
- *		direction: string,
- *		key: undefined|string,
- *		primaryKey: undefined|string
- * }} IDBCursorWithValue
- */
-
-/**
- * @typedef {{
- *		advance: Function,
- *		continue: Function,
- *		delete: Function,
- *		update: Function,
- *		value: Object|string|null,
- *		direction: string,
- *		key: undefined|string,
- *		primaryKey: undefined|string
- * }} IDBCursor
+ *		target: IDBRequest
+ * }} IDBTransactionError
  */
 
 /**
@@ -188,73 +77,94 @@
  * indexedDB storage handler
  */
 (function(window) {
-	var LOG_DEBUG = 0;
-	var LOG_INFO = 0;
-	var LOG_ERROR = 0;
+	const version = 1.00;
 
-	var DB_HOLD = 'holdDB';
-	var OBJECT_HOLD_DATABASES = 'databases';
+	const LOG_DEBUG = 0;
+	const LOG_WARN = 1;
+	const LOG_ERROR = 2;
+
+	const DB_HOLD = 'holdDB';
+	const OBJECT_HOLD_DATABASES = 'databases';
 
 	/**
 	 * Has holdDB been initialized
 	 * @type {boolean}
 	 */
-	var initialized = false;
+	let initialized = false;
 
 	/**
 	 * Databases initialized
-	 * @type {Object.<number|undefined>}
+	 * @type {Map<string, number>}
 	 */
-	var initializedDatabases = {};
+	const initializedDatabases = new Map();
+
+	/**
+	 * Databases initialized
+	 * @type {Map<string, Array<{
+	 *     object: string,
+	 *     resolve: Function,
+	 *     reject: Function
+	 * }>>}
+	 */
+	const waitDatabase = new Map();
 
 	/**
 	 * holdDB Initialized promises
-	 * @type {Array.<function>}
+	 * @type {Array<Function>}
 	 */
-	var initPromises = [];
+	const initPromises = [];
 
 	/**
 	 * Opened databases cached
-	 * @type {Object.<IDBDatabase>}
+	 * @type {Map<string, IDBDatabase>}
 	 */
-	var databaseCache = {};
+	const databaseCache = new Map();
 
 	/**
 	 * If ObjectStore has unique set as true then setUnique has to be set beforehand to enable postfix ObjectStore name
 	 * @see db.setUnique
 	 * @type {number|string}
 	 */
-	var objectStoreUnique;
+	let objectStoreUnique;
 
 	/**
 	 * Is this browser supported?
 	 * @type {boolean}
 	 */
-	var supported = true;
+	let supported = true;
 
 	/**
 	 * Convenience for READ_WRITE
-	 * @type {string}
+	 * @type {IDBTransactionMode}
 	 */
-	var RW = 'readwrite';
+	const RW = 'readwrite';
 
 	/**
 	 * Convenience for READ_ONLY
-	 * @type {string}
+	 * @type {IDBTransactionMode}
 	 */
-	var R = 'readonly';
+	const R = 'readonly';
 
 	/**
 	 * Object that will be visible to outside
 	 */
-	var db = Object.create(null);
+	const db = Object.create(null);
+
+	const IDBCursorDirection = {
+		"next": "next",
+		"nextReverse": "nextReverse",
+		"nextunique": "nextunique",
+		"prev": "prev",
+		"prevReverse": "prevReverse",
+		"prevunique": "prevunique"
+	};
 
 	/**
 	 * Database schemas and what kind of ObjectStores it can hold
 	 * @see holdDBObjectStoreSchema
 	 * @type {Object}
 	 */
-	var schemas = {
+	const schemas = {
 		/**
 		 * Internal database to hold all registered databases
 		 */
@@ -263,6 +173,17 @@
 				databases: {}
 			}
 		}
+	};
+
+	/**
+	 * Logging system that can be overridden
+	 * @type {{debug: Function, warn: Function, error: Function, submit: Function|null}}
+	 */
+	const log = {
+		debug: console.log,
+		warn: console.warn,
+		error: console.error,
+		submit: function() {}
 	};
 
 	/**
@@ -275,359 +196,39 @@
 
 		switch (errorLevel) {
 			case LOG_DEBUG:
-				console.log(`holdDB.js: ${message}`);
+				log.debug(`holdDB.js:`, message);
 				break;
 
-			case LOG_INFO:
-				console.info(`holdDB.js: ${message}`);
+			case LOG_WARN:
+				log.warn(`holdDB.js:`, message);
 				break;
 
 			case LOG_ERROR:
-				console.error(`holdDB.js: ${message}`);
+				log.error(`holdDB.js:`, message);
+
+				// Call submit in error case
+				log.submit(`HoldDB.js error`);
 				break;
 		}
 	}
 
-	/**
-	 * Create objectStore for this IDBDatabase
-	 * @private
-	 * @param {IDBDatabase} database
-	 * @param {string} objectName
-	 */
-	function createObjectStore(database, objectName) {
-		/**
-		 * @type {holdDBDatabaseSchema}
-		 */
-		var objectData = schemas[database.name];
-
-		/**
-		 * @type {holdDBObjectStoreSchema}
-		 */
-		var storeSchema = objectData.objects[objectName];
-
-		var createOptions = {},
-			store;
-
-		// If objectStore already exists then don't do anything
-		if(!database.objectStoreNames.contains(objectName)) {
-			consoleMessage(`[${database.name}::${objectName}] Create ObjectStore`, LOG_DEBUG);
-
-			// objectStore has not been defined so it can not be created
-			if (storeSchema === undefined) {
-				throw new Error(`holdDB.js::createObjectStore [${database.name}::${objectName}] has not been initialized`);
-			}
-
-			// Add key path if exists
-			if (storeSchema.keyPath) {
-				createOptions.keyPath = storeSchema.keyPath;
-			}
-
-			// Add autoIncrement if exists
-			if (storeSchema.autoIncrement === true) {
-				createOptions.autoIncrement = true;
-			}
-
-			// Creating a new DB store with a specified key property
-			store = database.createObjectStore(objectName, createOptions);
-
-			// Create indexes
-			if (Array.isArray(storeSchema.indexes)) {
-				storeSchema.indexes.forEach(function(data) {
-					store.createIndex('by_' + data.index, data.index, {
-						unique: data.unique || false,
-						multiEntry: data.multiEntry || false
-					});
-				});
-			}
-		}
+	function consoleError(message) {
+		consoleMessage(message, LOG_ERROR);
 	}
 
 	/**
-	 * IndexedDB database onVersionChange event
-	 * @param event
+	 * openDB thrown error
+	 * @param {holdDBException} error
 	 */
-	function idbOnVersionChange(event) {
-		var database = event.target.name;
+	function openDBThrownError(error) {
+		if (error.db) {
+			const target = (error.storage) ? `${error.db}::${error.storage}` : error.db;
 
-		consoleMessage(`[${database}] onVersionChange`, LOG_DEBUG);
-
-		if (databaseCache[database] !== undefined && databaseCache[database] !== event.target) {
-			databaseCache[database].close();
-		}
-
-		event.target.close();
-
-		delete databaseCache[database];
-	}
-
-	/**
-	 * IDBOpenDBRequest onAbort
-	 * @param e
-	 * @returns {boolean}
-	 */
-	function idbOpenDBRequestAbort(e) {
-		/**
-		 * @type {IDBOpenDBRequest}
-		 */
-		var target = e.target;
-
-		var dbName = target.holdDB.database,
-			objectName = target.holdDB.object;
-
-		consoleMessage(`[${dbName}::${objectName}] onAbort`, LOG_DEBUG);
-
-		if (databaseCache[dbName]) {
-			databaseCache[dbName].close();
-			delete databaseCache[dbName];
-		}
-	}
-
-	/**
-	 * IDBOpenDBRequest onBlocked
-	 * @param e
-	 * @returns {boolean}
-	 */
-	function idbOpenDBRequestBlocked(e) {
-		/**
-		 * @type {IDBOpenDBRequest}
-		 */
-		var target = e.target;
-
-		consoleMessage(`[${target.holdDB.database}::${target.holdDB.object}] onBlocked`, LOG_DEBUG);
-	}
-
-	/**
-	 * IDBOpenDBRequest onSuccess
-	 * @param e
-	 * @returns {boolean}
-	 */
-	function idbOpenDBRequestSuccess(e) {
-		/**
-		 * @type {IDBOpenDBRequest}
-		 */
-		var target = e.target;
-
-		/**
-		 * @type {IDBDatabase}
-		 */
-		var database = target.result;
-
-		var dbName = target.holdDB.database,
-			objectName = target.holdDB.object,
-			resolve = target.holdDB.resolve,
-			reject = target.holdDB.reject;
-
-		consoleMessage(`[${dbName}] Opened`, LOG_DEBUG);
-
-		// On version change listener to close current cached database because new version is coming
-		database.onversionchange = idbOnVersionChange;
-
-		// Make sure that holdDB::databases has this objectStore defined and if not then take required action
-		if (dbName !== DB_HOLD && initializedDatabases[dbName] === undefined) {
-			// If reset requested and this database has not been just created then do reset
-			if (!(target.holdDB.upgraded === true && database.version === 1) && schemas[dbName].reset !== undefined) {
-				consoleMessage(`[${dbName}] Database not initialized and reset defined`, LOG_DEBUG);
-
-				db.deleteDB(dbName).then(function() {
-					openDBHandle(dbName, objectName, resolve, reject, false);
-				});
-
-				return true;
-			}
-
-			// If database has been just created so mark it as initialized
-			initializeDatabase(dbName);
-		}
-
-		// objectStore does not exist so create and that will trigger onUpgradeNeeded that will handle caching etc
-		if (objectName !== undefined && database.objectStoreNames.contains(objectName) === false) {
-			consoleMessage(`[${dbName}::${objectName}] Create non-existing objectStore`, LOG_DEBUG);
-			openDBHandle(dbName, objectName, resolve, reject, false);
-			return true;
-		}
-
-		// Cache the open connection
-		databaseCache[dbName] = database;
-
-		resolve(database);
-	}
-
-	/**
-	 * IDBOpenDBRequest onUpgradeNeeded
-	 * Triggers every time there is need to change database schema including when creating database
-	 * @param e
-	 * @returns {boolean}
-	 */
-	function idbOpenDBRequestUpgrade(e) {
-		/**
-		 * @type {IDBOpenDBRequest}
-		 */
-		var target = e.target;
-
-		var database = e.target.result;
-
-		var dbName = target.holdDB.database,
-			objectName = target.holdDB.object;
-
-		e.target.transaction.onerror = window.indexedDB.onerror;
-		consoleMessage(`[${dbName}] onUpgradeNeeded`, LOG_DEBUG);
-
-		// Mark database as just upgraded
-		target.holdDB.upgraded = true;
-
-		if (objectName !== undefined) {
-			createObjectStore(database, objectName);
-		}
-	}
-
-	/**
-	 * IDBOpenDBRequest error
-	 * @param e
-	 * @returns {boolean}
-	 */
-	function idbOpenDBRequestError(e) {
-		/**
-		 * @type {IDBOpenDBRequest}
-		 */
-		var target = e.target;
-
-		/**
-		 * @type {{
-		 *		name: string,
-		 *		message: string
-		 * }|DOMException}
-		 */
-		var error = target.error;
-
-		var dbName = target.holdDB.database,
-			objectName = target.holdDB.object;
-
-		if (error.name === "VersionError") {
-			consoleMessage(`[${dbName}] VersionError delete and recreate`, LOG_DEBUG);
-
-			// VersionError for some reason - delete database and trigger again opening of this database
-			db.deleteDB(dbName).then(function() {
-				openDBHandle(dbName, objectName, target.holdDB.resolve, target.holdDB.reject, false);
-			});
-			return true;
-		}
-
-		if (error.name === "UnknownError") {
-			consoleMessage(`[${dbName}] openDB UnknownError`, LOG_DEBUG);
-
-			// UnknownError - at least FF gave this if DB created with newer version and then opened with older
-			db.deleteDB(dbName).then(function() {
-				consoleMessage(`[${dbName}] UnknownError database has been deleted`, LOG_DEBUG);
-				target.holdDB.reject({
-					'db': dbName,
-					'storage': objectName,
-					'name': error.name,
-					'message': error.message
-				});
-			});
-			return true;
-		}
-
-		if (error.name === "InvalidStateError") {
-			if (document.location.pathname.indexOf('469') === -1) {
-				consoleMessage(`IndexedDB not supported`, LOG_DEBUG);
-				// For now indexedDB is required to run Zyptonite
-				document.location = '/469';
-			}
-			// storage not supported
-			supported = false;
-		}
-
-		target.holdDB.reject({
-			'db': dbName,
-			'storage': objectName,
-			'name': error.name,
-			'message': error.message
-		});
-
-		// Suppress error escalating
-		return true;
-	}
-
-	/**
-	 * Set database initialized to holdDB table
-	 * @param {string} database
-	 */
-	function initializeDatabase(database) {
-		consoleMessage(`[${database}] Initialize database`, LOG_DEBUG);
-
-		// Set database initialized because it clearly exists
-		initializedDatabases[database] = Date.now();
-
-		// Write new object store to general db objectStore
-		db.openDB(DB_HOLD, OBJECT_HOLD_DATABASES).then(function(idb) {
-			var tx = idb.transaction(OBJECT_HOLD_DATABASES, RW),
-				storeList = tx.objectStore(OBJECT_HOLD_DATABASES);
-
-			storeList.put({
-				key: database,
-				created: Date.now()
-			}, database);
-		}).catch(openDBThrownError);
-	}
-
-	/**
-	 * openDB handler
-	 * @param {string} dbName
-	 * @param {string|null} objectName
-	 * @param {Function} resolve
-	 * @param {Function} reject
-	 * @param {boolean} [validate]
-	 */
-	function openDBHandle(dbName, objectName, resolve, reject, validate) {
-		/**
-		 * @type {IDBOpenDBRequest}
-		 */
-		var request;
-
-		// Validation done only once and if openDBHandle calls it self again then this is not parsed
-		if (validate !== false) {
-			dbName = openDBHandleValidate(dbName, objectName);
-		}
-
-		// Database already open and object storeStore requested
-		if (databaseCache[dbName] && objectName !== undefined) {
-			// Database has requested ObjectStore already opened so return from cache
-			if (databaseCache[dbName].objectStoreNames.contains(objectName) !== false) {
-				resolve(databaseCache[dbName]);
-				return;
-			}
-
-			// Requested ObjectStorage is not open so open new version of database and initialize ObjectStore
-			request = window.indexedDB.open(dbName, databaseCache[dbName].version + 1);
+			consoleMessage(`[${target}] openDB fatal error [${error.name} / ${error.message}]`, LOG_ERROR);
 
 		} else {
-			// Open the requested database with latest version
-			request = window.indexedDB.open(dbName);
+			consoleMessage(`openDB fatal error [${error.name} / ${error.message}]`, LOG_ERROR);
 		}
-
-		// Bind requested database and objectStore name to IDBOpenDBRequest
-		request.holdDB = {
-			'database': dbName,
-			'object': objectName,
-			'resolve': resolve,
-			'reject': reject
-		};
-
-		// IDB connection aborted
-		request.onabort = idbOpenDBRequestAbort;
-
-		// IDB blocked
-		request.onblocked = idbOpenDBRequestBlocked;
-
-		// IDB failure
-		request.onerror = idbOpenDBRequestError;
-
-		// IDB open success
-		request.onsuccess = idbOpenDBRequestSuccess;
-
-		// Handle onUpgradeNeeded
-		request.onupgradeneeded = idbOpenDBRequestUpgrade;
 	}
 
 	/**
@@ -637,7 +238,7 @@
 	 * @returns {string}
 	 */
 	function openDBHandleValidate(dbName, objectName) {
-		var dbData = schemas[dbName];
+		const dbData = schemas[dbName];
 
 		if (dbName !== DB_HOLD) {
 			// Make sure holdDB has been initialized
@@ -670,50 +271,548 @@
 	}
 
 	/**
-	 * IDBTransaction error
-	 * @param {Object} event
-	 * @param {Function} reject
-	 * @param {string} funcName
+	 * Open database
+	 * @param {string} dbName
+	 * @param {string} [objectName]
+	 * @returns {Promise<IDBDatabase>}
 	 */
-	function transactionError(event, reject, funcName) {
+	function openDB(dbName, objectName) {
+		// Validation parses correct suffixed database name if required and this should be done only once thus
+		// call it here in openDB that should be only access point to database for client to use
+		dbName = openDBHandleValidate(dbName, objectName);
+
+		// Bind dbName and objectName for function and promise then adds resolve reject functions
+		return new Promise(openDBHandle.bind(null, dbName, objectName));
+	}
+
+	/**
+	 * Set database initialized to holdDB table
+	 * @param {string} database
+	 */
+	function initializedDatabase(database) {
+		// HoldDB internal table is not handled in this set
+		if (database !== DB_HOLD && !initializedDatabases.has(database)) {
+			consoleMessage(`[${database}] Initialized database`, LOG_DEBUG);
+
+			// Set database initialized because it clearly exists
+			initializedDatabases.set(database, Date.now());
+
+			// Write new object store to general db objectStore
+			openDB(DB_HOLD, OBJECT_HOLD_DATABASES).then(function (idb) {
+				const tx = idb.transaction(OBJECT_HOLD_DATABASES, RW);
+				const storeList = tx.objectStore(OBJECT_HOLD_DATABASES);
+
+				storeList.put({
+					key: database,
+					created: Date.now()
+				}, database);
+			}).catch(openDBThrownError);
+		}
+	}
+
+	/**
+	 * Create objectStore for this IDBDatabase
+	 * @private
+	 * @param {IDBDatabase} database
+	 * @param {string} objectName
+	 */
+	function createObjectStore(database, objectName) {
 		/**
-		 * @type {IDBRequest}
+		 * @type {holdDBDatabaseSchema}
 		 */
-		var idbRequest = event.target;
+		const objectData = schemas[database.name];
 
 		/**
-		 * @type {IDBTransaction}
+		 * @type {holdDBObjectStoreSchema}
 		 */
-		var	transaction = event.currentTarget;
+		const storeSchema = objectData.objects[objectName];
 
-		var	error = idbRequest.error;
+		const createOptions = {};
+
+		// If objectStore already exists then don't do anything
+		if(!database.objectStoreNames.contains(objectName)) {
+			consoleMessage(`[${database.name}::${objectName}] Create ObjectStore`, LOG_DEBUG);
+
+			// objectStore has not been defined so it can not be created
+			if (storeSchema === undefined) {
+				throw new Error(`holdDB.js::createObjectStore [${database.name}::${objectName}] has not been initialized`);
+			}
+
+			// Add key path if exists
+			if (storeSchema.keyPath) {
+				createOptions.keyPath = storeSchema.keyPath;
+			}
+
+			// Add autoIncrement if exists
+			if (storeSchema.autoIncrement === true) {
+				createOptions.autoIncrement = true;
+			}
+
+			// Creating a new DB store with a specified key property
+			const store = database.createObjectStore(objectName, createOptions);
+
+			// Create indexes
+			if (Array.isArray(storeSchema.indexes)) {
+				storeSchema.indexes.forEach(function(data) {
+					if (data.index === undefined) {
+						throw new Error(`holdDB.js::createObjectStore [${database.name}::${objectName}] Index missing index type`);
+					}
+
+					store.createIndex(`idx_${data.index}`, data.index, {
+						unique: data.unique || false,
+						multiEntry: data.multiEntry || false
+					});
+				});
+			}
+		}
+	}
+
+	/**
+	 * IndexedDB database onVersionChange event
+	 * @param event
+	 */
+	function idbOnVersionChange(event) {
+		const database = event.target.name;
+
+		consoleMessage(`[${database}] onVersionChange`, LOG_DEBUG);
+
+		if (databaseCache.has(database) && databaseCache.get(database) !== event.target) {
+			databaseCache.get(database).close();
+		}
+
+		event.target.close();
+
+		databaseCache.delete(database);
+	}
+
+	/**
+	 * IDBOpenDBRequest onAbort
+	 * @param {holdDBIDBOpenDBRequestError} e
+	 * @returns {boolean}
+	 */
+	function idbOpenDBRequestAbort(e) {
+		const dbName = e.target.holdDBStoreName;
+
+		consoleMessage(`[${dbName}] onAbort`, LOG_DEBUG);
+
+		if (databaseCache.has(dbName)) {
+			databaseCache.get(dbName).close();
+			databaseCache.delete(dbName);
+		}
+
+		waitDatabase.delete(dbName);
+	}
+
+	/**
+	 * IDBOpenDBRequest onBlocked
+	 * @param {holdDBIDBOpenDBRequestError} e
+	 * @returns {boolean}
+	 */
+	function idbOpenDBRequestBlocked(e) {
+		consoleMessage(`[${e.target.holdDBStoreName}] onBlocked`, LOG_DEBUG);
+	}
+
+	/**
+	 * IDBOpenDBRequest onSuccess
+	 * @param {holdDBIDBOpenEvent} e
+	 */
+	function idbOpenDBRequestSuccess(e) {
+		const target = e.target,
+				database = target.result,
+				dbName = database.name;
+
+		// On version change listener to close current cached database because new version is coming
+		database.onversionchange = idbOnVersionChange;
+
+		// Make sure that holdDB::databases has this objectStore defined and if not then take required action
+		if (dbName !== DB_HOLD && !initializedDatabases.has(dbName)) {
+			// If reset requested and this database has not been just created then do reset
+			if (database.version !== 1 && schemas[dbName].reset !== undefined) {
+				consoleMessage(`[${dbName}] Database not initialized and reset defined`, LOG_DEBUG);
+
+				db.deleteDB(dbName).then(function() {
+					openDBHandle(dbName);
+				});
+
+				return;
+			}
+
+			// Mark database as initialized
+			initializedDatabase(dbName);
+		}
+
+		// Cache the open connection - requires to be before create non-existing objectStore to create new version
+		databaseCache.set(dbName, database);
+
+		// Check all cached items if object store has not been created and required creation
+		// objectStore does not exist so create and that will trigger onUpgradeNeeded that will handle caching etc
+		const objectMissing = waitDatabase.get(dbName).some(data => {
+			// objectStore does not exist so create and that will trigger onUpgradeNeeded that will handle caching etc
+			if (data.object !== undefined && database.objectStoreNames.contains(data.object) === false) {
+				consoleMessage(`[${dbName}::${data.object}] ObjectStore not found - create`, LOG_DEBUG);
+				openDBHandle(dbName, data.object);
+				return true;
+			}
+
+			return false;
+		});
+
+		// All required object stores exist - trigger promises
+		if (!objectMissing) {
+			consoleMessage(`[${dbName}] Opened`, LOG_DEBUG);
+
+			waitDatabase.get(dbName).forEach(data => {
+				data.resolve(database);
+			});
+
+			// All waiting requests handled
+			waitDatabase.delete(dbName);
+		}
+	}
+
+	/**
+	 * IDBOpenDBRequest onUpgradeNeeded
+	 * Triggers every time there is need to change database schema including when creating database
+	 * @param {holdDBIDBVersionChangeEvent} e
+	 * @returns {boolean}
+	 */
+	function idbOpenDBRequestUpgrade(e) {
+		const database = e.target.result,
+				dbName = database.name;
+
+		e.target.transaction.onerror = consoleError;
+		consoleMessage(`[${dbName}] onUpgradeNeeded`, LOG_DEBUG);
+
+		waitDatabase.get(dbName).forEach(data => {
+			if (data.object !== undefined) {
+				createObjectStore(database, data.object);
+			}
+		});
+
+		// Mark database as initialized
+		initializedDatabase(dbName);
+	}
+
+	/**
+	 * IDBOpenDBRequest error
+	 * @param {holdDBIDBOpenDBRequestError} e
+	 * @returns {boolean}
+	 */
+	function idbOpenDBRequestError(e) {
+		const error = e.target.error,
+				dbName = e.target.holdDBStoreName;
+
+		if (error.name === "VersionError") {
+			consoleMessage(`[${dbName}] VersionError delete and recreate`, LOG_DEBUG);
+
+			// VersionError for some reason - delete database and trigger again opening of this database
+			db.deleteDB(dbName).then(function() {
+				openDBHandle(dbName);
+			});
+			return true;
+		}
+
+		if (error.name === "UnknownError") {
+			consoleMessage(`[${dbName}] openDB UnknownError [Code: ${error.code}] [Message: ${error.message}]`, LOG_DEBUG);
+			// Call submit in error case
+			log.submit(`HoldDB.js Unknown error`);
+
+			if (error.code === 0) {
+				if (document.location.pathname.indexOf('469') === -1) {
+					// For now indexedDB is required
+					document.location = '/469';
+				}
+
+			} else {
+				// UnknownError - at least FF gave this if DB created with newer version and then opened with older
+				db.deleteDB(dbName).then(function() {
+					consoleMessage(`[${dbName}] UnknownError database has been deleted`, LOG_DEBUG);
+					waitDatabase.get(dbName).forEach(data => {
+						data.reject({
+							'db': dbName,
+							'storage': data.object,
+							'name': error.name,
+							'message': error.message
+						});
+					});
+				});
+			}
+
+			return true;
+		}
+
+		if (error.name === "InvalidStateError") {
+			if (document.location.pathname.indexOf('469') === -1) {
+				consoleMessage(`IndexedDB not supported`, LOG_DEBUG);
+				// For now indexedDB is required
+				document.location = '/469';
+			}
+			// storage not supported
+			supported = false;
+		}
+
+		waitDatabase.get(dbName).forEach(data => {
+			data.reject({
+				'db': dbName,
+				'storage': data.object,
+				'name': error.name,
+				'message': error.message
+			});
+		});
+
+		// Suppress error escalating
+		return true;
+	}
+
+	/**
+	 * openDB handler
+	 * @private
+	 * @param {string} dbName
+	 * @param {string} [objectName]
+	 * @param {Function} [resolve]
+	 * @param {Function} [reject]
+	 */
+	function openDBHandle(dbName, objectName, resolve = undefined, reject = undefined) { // jshint ignore:line
+		let request;
+
+		// If promise return functions exists and open is already triggered then add callbacks just to waiting queue
+		if (resolve && reject) {
+			if (waitDatabase.has(dbName)) {
+				const resolves = waitDatabase.get(dbName);
+				resolves.push({
+					'object': objectName,
+					'resolve': resolve,
+					'reject': reject
+				});
+				return;
+			}
+		}
+
+		// Database already open and object storeStore requested
+		if (databaseCache.has(dbName) && objectName !== undefined) {
+			// Database has requested ObjectStore already opened
+			const targetDB = databaseCache.get(dbName);
+
+			// If resolve and reject are defined thus first call to open and store name found then can return
+			if (resolve) {
+				if (targetDB.objectStoreNames.contains(objectName) !== false) {
+					resolve(targetDB);
+					return;
+				}
+			}
+
+			consoleMessage(`[${dbName}::${objectName}] openDBHandle new [Version: ${targetDB.version + 1}]`, LOG_DEBUG);
+
+			// Requested ObjectStorage is not open so open new version of database and initialize ObjectStore
+			request = window.indexedDB.open(dbName, targetDB.version + 1);
+
+		} else {
+			// Open the requested database with latest version
+			request = window.indexedDB.open(dbName);
+		}
+
+		// Bind requested database and objectStore name to IDBOpenDBRequest
+		// This in bound only when resolve and reject are set -- internal calls don't set these
+		if (resolve && reject) {
+			let resolves = [];
+			if (waitDatabase.has(dbName)) {
+				resolves = waitDatabase.get(dbName);
+			} else {
+				waitDatabase.set(dbName, resolves);
+			}
+			resolves.push({
+				'object': objectName,
+				'resolve': resolve,
+				'reject': reject
+			});
+		}
+
+		// Store dbName to object for error cases
+		request.holdDBStoreName = dbName;
+
+		// IDB connection aborted
+		request.onabort = idbOpenDBRequestAbort;
+
+		// IDB blocked
+		request.onblocked = idbOpenDBRequestBlocked;
+
+		// IDB failure
+		request.onerror = idbOpenDBRequestError;
+
+		// IDB open success
+		request.onsuccess = idbOpenDBRequestSuccess;
+
+		// Handle onUpgradeNeeded
+		request.onupgradeneeded = idbOpenDBRequestUpgrade;
+	}
+
+	/**
+	 * IDBTransaction error
+	 * @param {IDBTransaction} transaction
+	 * @param {IDBRequest} event
+	 * @param {function(holdDBException)} reject
+	 * @param {string} message
+	 */
+	function transactionError(transaction, event, reject, message) {
+		const error = event.error;
+
+		let database = (transaction.objectStoreNames.length > 0) ?
+				`${transaction.db.name}::${transaction.objectStoreNames[0]}` : `${transaction.db.name}`;
 
 		// Log these to server so could try to figure out how to fix like multiAdd where constraint error was the reason
-		consoleMessage(`[${transaction.db.name}::${idbRequest.source.name}] ${funcName} [Error: ${error.name} :: ${error.message}]`, LOG_DEBUG);
+		consoleMessage(`[${database}] [${error.name} :: ${error.message}] ${message}`, LOG_ERROR);
 
-		event.preventDefault();
 		reject({
 			'db': transaction.db.name,
-			'storage': idbRequest.source.name,
+			'storage': (transaction.objectStoreNames.length > 0) ? transaction.objectStoreNames[0] : '',
 			'name': error.name,
 			'message': error.message
 		});
 	}
 
 	/**
-	 * openDB thrown error
-	 * @param {holdDBException} error
+	 * Get requested keys from the objectStore
+	 * @param {string} database
+	 * @param {string} object
+	 * @param {Array.<number|string>} keys
+	 * @param {string|boolean} [index]
+	 * @param {boolean} [asObject]
+	 * @return {Promise<Array|holdDBException>}
 	 */
-	function openDBThrownError(error) {
-		if (error.db) {
-			var target = (error.storage) ? `${error.db}::${error.storage}` : error.db;
+	function getKeysHandler(database, object, keys, index = undefined, asObject = false) {
+		return new Promise(function(resolve, reject) {
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
+				const items = [];
 
-			consoleMessage(`[${target}] openDB fatal error [${error.name} / ${error.message}]`, LOG_ERROR);
+				// Transaction completed
+				tx.oncomplete = function() {
+					resolve(items);
+				};
 
-		} else {
-			consoleMessage(`openDB fatal error [${error.name} / ${error.message}]`, LOG_ERROR);
-		}
+				// Transaction error
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getKeys transaction error`);
+				};
+
+				const objectStore = (index !== undefined) ? tx.objectStore(object).index(`idx_${index}`) : tx.objectStore(object);
+				const cursorRequest = objectStore.openCursor(null, "next");
+
+				cursorRequest.onsuccess = function() {
+					const cursor = this.result;
+
+					if (cursor) {
+						const key = (index) ? cursor.key : cursor.primaryKey;
+
+						if (keys.indexOf(key) !== -1) {
+							items.push(asObject ? {key: key, value: cursor.value} : cursor.value);
+						}
+
+						cursor.continue();
+					}
+				};
+
+				cursorRequest.onerror = function(error) {
+					consoleMessage(`[${database}::${object}] getKeys error`, LOG_ERROR);
+					reject({
+						db: database,
+						storage: object,
+						name: error.name,
+						message: error.message
+					});
+				};
+
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
+		});
 	}
+
+
+	/**
+	 * Update key database or insert if not existing and put was requested
+	 * @notice this function takes key value pair to update object or just key to be inserted or function to callback changes
+	 * @param {string} database
+	 * @param {string} object
+	 * @param {string|number|array<string>} key
+	 * @param {*} [value]
+	 * @param {boolean} [insert=false]
+	 * @param {boolean} [asObject=false]
+	 * @return {Promise<Object|holdDBException>}
+	 */
+	function updateHandler(database, object, key, value, insert = false, asObject = false) {
+		return new Promise(function(resolve, reject) {
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, RW);
+				const db = schemas[idb.name] || {};
+				const objectData = db.objects[object] || false;
+
+				if (objectData === false) {
+					consoleMessage(`[${idb.name}::${object}] Update object or virtual not defined`, LOG_ERROR);
+					reject({
+						'db': database,
+						'storage': object,
+						'name': `IDBUpdate`,
+						'message': `Update object or virtual not defined`
+					});
+					return;
+				}
+
+				// Transaction error
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `update transaction error`);
+				};
+
+				const store = tx.objectStore(object);
+				const cursorRequest = store.openCursor(window.IDBKeyRange.only(key));
+
+				cursorRequest.onsuccess = function() {
+					const cursor = this.result;
+
+					let	storeData;
+
+					if (cursor) {
+						storeData = (typeof value === 'function') ? value(cursor.value) : value;
+						cursor.update(storeData);
+
+					} else if (insert === true) {
+						storeData = (typeof value === 'function') ? value(null) : value;
+						store.put(storeData, key);
+
+					} else {
+						reject({
+							'db': database,
+							'storage': object,
+							'name': `IDBUpdate`,
+							'message': `Requested key does not exist`
+						});
+						return;
+					}
+
+					resolve(asObject ? {key: cursor.primaryKey || key, value: storeData} : storeData);
+				};
+
+				cursorRequest.onerror = function(error) {
+					consoleMessage(`[${database}::${object}] Update error [Key: ${key}] [Error: ${error.message}]`, LOG_ERROR);
+					reject({
+						'db': database,
+						'storage': object,
+						'name': error.name,
+						'message': error.message
+					});
+				};
+
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
+		});
+	}
+
+	db.getVersion = function () {
+		return version;
+	};
 
 	/**
 	 * If unique has been defined to objectStore schema then second parameter is required to postfix objectStore name
@@ -741,7 +840,7 @@
 	};
 
 	db.shouldReset = function(database, stamp) {
-		var objectData = schemas[database.split("-")[0]];
+		const objectData = schemas[database.split("-")[0]];
 
 		// objectStore exists - check if reset is requested
 		if (objectData !== undefined) {
@@ -756,34 +855,22 @@
 
 	/**
 	 * Returns list of databases currently initialized
-	 * @returns {Object}
+	 * @return {Map<string, number>}
 	 */
 	db.getDatabases = function() {
-		return initializedDatabases;
-	};
-
-	/**
-	 * Open database
-	 * @protected
-	 * @param {string} dbName
-	 * @param {string} [objectName]
-	 * @returns {Promise}
-	 */
-	db.openDB = function(dbName, objectName) {
-		return new Promise(openDBHandle.bind(null, dbName, objectName));
+		return new Map(initializedDatabases);
 	};
 
 	/**
 	 * Initialize new ObjectStore to given database
-	 * @param {{
-	 *		name: string,
-	 *		reset: number|undefined,
-	 *		unique: boolean|undefined
-	 * }, string} database
+	 * @param {Object|string} database
+	 * @param {string} database.name
+	 * @param {number} [database.reset]
+	 * @param {boolean} [database.unique]
 	 * @param {Object.<holdDBObjectStoreSchema>|string} [schema]
 	 */
 	db.initDatabase = function(database, schema) {
-		var dbName;
+		let dbName;
 
 		if (typeof database === "string") {
 			dbName = database;
@@ -799,7 +886,7 @@
 		}
 
 		// Check that database has not been initialized yet
-		if (schemas[database] !== undefined) {
+		if (schemas[dbName] !== undefined) {
 			consoleMessage(`[${database}] initDatabase has been initialized already`, LOG_ERROR);
 			return false;
 		}
@@ -825,11 +912,11 @@
 	 * @param {holdDBObjectStoreSchema} [schema]
 	 */
 	db.initObjectStore = function(database, objectStore, schema) {
-		var objectData = schemas[database];
+		const objectData = schemas[database];
 
 		// Check that database has been initialized where this new ObjectStore goes to
 		if (objectData === undefined) {
-			consoleMessage(`[${database}] initObjectStore database does not exist`, LOG_ERROR);
+			consoleMessage(`[${database}::${objectStore}] initObjectStore database does not exist`, LOG_ERROR);
 			return false;
 		}
 
@@ -841,29 +928,30 @@
 	 * Count keys in given objectStore
 	 * @param {string} database
 	 * @param {string} object
+	 * @return {Promise<number>}
 	 */
 	db.count = function(database, object) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R);
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `has transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `has transaction error`);
 				};
 
-				/**
-				 * @type {IDBObjectStore}
-				 */
-				var store = tx.objectStore(object);
+				const store = tx.objectStore(object);
 
-				var countRequest = store.count();
+				const countRequest = store.count();
 
-				countRequest.onsuccess = function(response) {
-					resolve(response.target.result);
+				countRequest.onsuccess = function() {
+					resolve(this.result);
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -872,28 +960,25 @@
 	 * @param {Array} databases
 	 */
 	db.deleteDatabases = function(databases) {
-		return new Promise(function(resolve) {
-			var counter = 0,
-				databaseCount = databases.length,
-				deleted = [],
-				x;
+		return new Promise(async (resolve) => {
+			const databaseCount = databases.length;
+			const deleted = [];
 
 			// Log that deleteAllDatabases has been called
 			consoleMessage(`DeleteDatabases`, LOG_DEBUG);
 
-			var deleteCallback = function() {
-				counter++;
+			for (let x = 0; x < databaseCount; x++) {
+				try {
+					// Delete the database
+					await db.deleteDB(databases[x]);
+					deleted.push(databases[x]);
 
-				if (databaseCount === counter) {
-					resolve(deleted);
+				} catch (error) {
+					consoleError(`DeleteDatabases error: ${error}`);
 				}
-			};
-
-			for (x = 0; x < databaseCount; x++) {
-				deleted.push(databases[x]);
-				// Delete the database
-				db.deleteDB(databases[x]).then(deleteCallback);
 			}
+
+			resolve(deleted);
 		});
 	};
 
@@ -903,17 +988,15 @@
 	 */
 	db.deleteDB = function(dbName) {
 		return new Promise(function(resolve, reject) {
-			var request;
-
 			consoleMessage(`[${dbName}] Request delete`, LOG_DEBUG);
 
-			if (databaseCache[dbName] !== undefined) {
-				databaseCache[dbName].close();
-				delete databaseCache[dbName];
+			if (databaseCache.has(dbName)) {
+				databaseCache.get(dbName).close();
+				databaseCache.delete(dbName);
 			}
 
 			//Opening the DB
-			request = window.indexedDB.deleteDatabase(dbName);
+			const request = window.indexedDB.deleteDatabase(dbName);
 
 			// IDB delete success
 			request.onsuccess = function() {
@@ -930,12 +1013,12 @@
 			};
 
 			// IDB delete failure
-			request.onerror = function(e) {
-				consoleMessage(`[${dbName}] deleteDB error [Error: ${e.target.error.name}]`, LOG_ERROR);
+			request.onerror = function() {
+				consoleMessage(`[${dbName}] deleteDB error [Error: ${this.error.name}]`, LOG_ERROR);
 				reject({
 					'db': dbName,
-					'name': e.target.error.name,
-					'message': e.target.error.message
+					'name': this.error.name,
+					'message': this.error.message
 				});
 			};
 		});
@@ -951,38 +1034,42 @@
 		return new Promise(function(resolve, reject) {
 			db.getDatabaseObjectStores(database).then(function(/*Array*/objectStores) {
 				if (objectStores.indexOf(storeName) !== -1) {
-					db.openDB(database, storeName).then(function(/*IDBDatabase*/database) {
-						var request = window.indexedDB.open(database.name, databaseCache[database.name].version + 1);
+					openDB(database, storeName).then(function(idb) {
+						const request = window.indexedDB.open(idb.name, databaseCache.get(idb.name).version + 1);
 
 						// Handle onUpgradeNeeded
-						request.onupgradeneeded = function(e) {
+						request.onupgradeneeded = function() {
 							// Delete requested Object
-							e.target.result.deleteObjectStore(storeName);
+							request.result.deleteObjectStore(storeName);
 						};
 
 						// IDB open success
-						request.onsuccess = function(e) {
-							consoleMessage(`[${storeName}] [${e.target.result.name}] removed object`, LOG_DEBUG);
+						request.onsuccess = function() {
+							consoleMessage(`[${database}::${storeName}] removed object`, LOG_DEBUG);
 							resolve();
 						};
 
 						// IDB failure
 						request.onerror = function(event) {
 							// Log error
-							consoleMessage(`[${storeName}] [${event.target.error.name}] deleteObject error`, LOG_ERROR);
+							consoleMessage(`[${database}::${storeName}] deleteObject error`, LOG_ERROR);
 
 							event.preventDefault();
 							reject();
 						};
-					}).catch(openDBThrownError);
+					}).catch(error => {
+						openDBThrownError(error);
+						reject(error);
+					});
+
 				} else {
-					consoleMessage(`[${database}]::${storeName}] delete ObjectStore does not exist`, LOG_DEBUG);
+					consoleMessage(`[${database}::${storeName}] delete ObjectStore does not exist`, LOG_DEBUG);
 					resolve();
 				}
 			}).catch(function(error) {
 				// Log these to server so could try to figure out how to fix like multiAdd where constraint error was the reason
 				consoleMessage(`[${database}::${storeName}] [Error: ${error.name}] ${error.message}`, LOG_ERROR);
-				reject();
+				reject(error);
 			});
 		});
 	};
@@ -992,33 +1079,34 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {string|Array} key
+	 * @param {string} [index]
+	 * @return {Promise<boolean>}
 	 */
-	db.has = function(database, object, key) {
+	db.has = function(database, object, key, index = undefined) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					req;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `has transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `has transaction error`);
 				};
 
-				/**
-				 * @type {IDBObjectStore}
-				 */
-				var store = tx.objectStore(object);
+				const store = (index === undefined) ? tx.objectStore(object) : tx.objectStore(object).index(`idx_${index}`);
 
-				req = store.openKeyCursor(IDBKeyRange.only(key));
-				req.onsuccess = function(e) {
+				const req = store.openKeyCursor(window.IDBKeyRange.only(key));
+				req.onsuccess = function() {
 					// key already exist
-					if (e.target.result !== null) {
+					if (this.result) {
 						resolve(true);
 					} else {
 						resolve(false);
 					}
 				};
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1029,10 +1117,14 @@
 	 * @return {Promise}
 	 */
 	db.hasObjectStore = function(database, objectName) {
-		return new Promise(function(resolve) {
-			db.openDB(database).then(function(/*IDBDatabase*/idb) {
+		return new Promise(function(resolve, reject) {
+			openDB(database).then(function(idb) {
 				resolve(idb.objectStoreNames.contains(objectName));
-			}).catch(openDBThrownError);
+
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1043,35 +1135,39 @@
 	 * @param {string} object
 	 * @param {string|number|Object} key
 	 * @param {string|Object} [value]
+	 * @return {Promise<*|holdDBException>}
 	 */
 	db.add = function(database, object, key, value) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, RW),
-					db = schemas[idb.name] || {},
-					objectData = db.objects[object] || false,
-					store;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, RW);
+				const objectData = schemas[idb.name].objects[object] || false;
+				let request;
 
 				// Transaction completed
 				tx.oncomplete = function() {
-					resolve(true);
+					// Returns key used to insert the data like KeyPath or autoIncrement
+					resolve(request.result);
 				};
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `add transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `add transaction error`);
 				};
 
 				// Get the object store
-				store = tx.objectStore(object);
+				const store = tx.objectStore(object);
 
 				if (objectData.autoIncrement || objectData.keyPath) {
-					store.add(key);
+					request = store.add(key);
 
 				} else {
-					store.add(value, key);
+					request = store.add(value, /**@type {IDBValidKey}*/(key));
 				}
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1081,15 +1177,15 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {Array.<{key:string, value:*}>|Object} items
+	 * @return {Promise<{items:number, error: number}|holdDBException>}
 	 */
 	db.addMulti = function(database, object, items) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, RW),
-					db = schemas[idb.name] || {},
-					objectData = db.objects[object] || false,
-					error = 0,
-					x, store;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, RW);
+				const db = schemas[idb.name] || {};
+				const objectData = db.objects[object] || false;
+				let error = 0;
 
 				// Transaction completed
 				tx.oncomplete = function() {
@@ -1100,22 +1196,22 @@
 				};
 
 				// Transaction error
-				tx.onerror = function(event) {
+				tx.onerror = function(/*IDBTransactionError*/event) {
 					error++;
 
 					// add throws ConstraintError if mutation does not work for example because of index
 					if (event.target.error.name === 'ConstraintError') {
-						event.preventDefault();
+						this.preventDefault();
 
 					} else {
-						transactionError(event, reject, `addMulti transaction error`);
+						transactionError(this, event.target, reject, `addMulti transaction error`);
 					}
 				};
 
 				// Get the object store
-				store = tx.objectStore(object);
+				const store = tx.objectStore(object);
 
-				for (x = 0; x < items.length; x++) {
+				for (let x = 0; x < items.length; x++) {
 					if (objectData.autoIncrement || objectData.keyPath) {
 						store.add(items[x]);
 
@@ -1123,7 +1219,10 @@
 						store.add(items[x].value, items[x].key);
 					}
 				}
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1134,14 +1233,14 @@
 	 * @param {string} object
 	 * @param {string|number|Object} key
 	 * @param {string|Object} [value]
+	 * @return {Promise<boolean|holdDBException>}
 	 */
 	db.put = function(database, object, key, value) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, RW),
-					db = schemas[idb.name] || {},
-					objectData = db.objects[object] || false,
-					store;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, RW);
+				const db = schemas[idb.name] || {};
+				const objectData = db.objects[object] || false;
 
 				// Transaction completed
 				tx.oncomplete = function() {
@@ -1149,21 +1248,24 @@
 				};
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `put transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `put transaction error`);
 				};
 
 				// Get the object store
-				store = tx.objectStore(object);
+				const store = tx.objectStore(object);
 
 				if (objectData.autoIncrement || objectData.keyPath) {
 					store.put(key);
 
 				} else {
-					store.put(value, key);
+					store.put(value, /**@type {IDBValidKey}*/(key));
 				}
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1171,48 +1273,40 @@
 	 * Get data by index from database
 	 * @param {string} database
 	 * @param {string} object
-	 * @param {string} key
+	 * @param {string} index
+	 * @param {string|number|null} [value=null]
+	 * @return {Promise<Array<*>|holdDBException>}
 	 */
-	db.getByIndex = function(database, object, key) {
+	db.getByIndex = function(database, object, index, value = null) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					db = schemas[idb.name] || {},
-					objectData = db.objects[object] || false,
-					request;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `getByIndex transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getByIndex transaction error`);
 				};
 
-				if (objectData.keyPath !== undefined) {
-					request = tx.objectStore(object).index("by_" + objectData.keyPath).get(key);
+				const request = tx.objectStore(object).index(`idx_${index}`).getAll(value);
 
-					request.onsuccess = function() {
-						resolve(this.result, key);
-					};
+				request.onsuccess = function() {
+					resolve(this.result);
+				};
 
-					request.onerror = function(error) {
-						consoleMessage(`[${database}::${object}] getByIndex error`, LOG_ERROR);
-						reject({
-							db: database,
-							storage: object,
-							name: error.name,
-							message: error.message
-						});
-					};
-				} else {
-					consoleMessage(`[${database}::${object}] getByIndex usage without defined index`, LOG_ERROR);
+				request.onerror = function(error) {
+					consoleMessage(`[${database}::${object}] getByIndex error`, LOG_ERROR);
 					reject({
 						db: database,
 						storage: object,
-						name: 'getByIndex',
-						message: 'Usage without defined index'
+						name: error.name,
+						message: error.message
 					});
-				}
+				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1221,22 +1315,22 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {string|number} key
+	 * @return {Promise<*|holdDBException>}
 	 */
 	db.get = function(database, object, key) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					request;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `get transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `get transaction error`);
 				};
 
-				request = tx.objectStore(object).get(key);
+				const request = tx.objectStore(object).get(key);
 
-				request.onsuccess = function(evt) {
-					resolve(evt.target.result);
+				request.onsuccess = function() {
+					resolve(this.result);
 				};
 
 				request.onerror = function(error) {
@@ -1249,7 +1343,10 @@
 					});
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1257,28 +1354,24 @@
 	 * Get all the data from database
 	 * @param {string} database
 	 * @param {string} object
-	 * @param {IDBKeyRange} [keyRange]
+	 * @param {IDBValidKey|IDBKeyRange} [keyRange]
 	 * @param {number} [limit]
+	 * @return {Promise<Array<*>|holdDBException>}
 	 */
 	db.getAll = function(database, object, keyRange, limit) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					request;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `getAll transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getAll transaction error`);
 				};
 
-				// Default values for range and limit
-				keyRange = keyRange || null;
-				limit = limit || null;
+				const request = tx.objectStore(object).getAll(keyRange || null, limit || null);
 
-				request = tx.objectStore(object).getAll(keyRange, limit);
-
-				request.onsuccess = function(evt) {
-					resolve(evt.target.result);
+				request.onsuccess = function() {
+					resolve(this.result);
 				};
 
 				request.onerror = function(error) {
@@ -1291,36 +1384,94 @@
 					});
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
+		});
+	};
+
+	/**
+	 * Get single item
+	 * @param {string} database
+	 * @param {string} object
+	 * @return {Promise<{key: string|number, value: *}|holdDBException>}
+	 */
+	db.getAny = function(database, object) {
+		return new Promise(function(resolve, reject) {
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
+
+				let result;
+
+				// Transaction completed
+				tx.oncomplete = function() {
+					resolve(result);
+				};
+
+				// Transaction error
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getAny transaction error`);
+				};
+
+				let cursorRequest = tx.objectStore(object).openCursor(null, IDBCursorDirection.next);
+				cursorRequest.onsuccess = function() {
+					const cursor = this.result;
+
+					if (cursor) {
+						result = {
+							key: cursor.key,
+							value: cursor.value
+						};
+					}
+				};
+
+				cursorRequest.onerror = function(error) {
+					consoleMessage(`[${database}::${object}] getAny error`, LOG_ERROR);
+					reject({
+						'db': database,
+						'storage': object,
+						'name': error.name,
+						'message': error.message
+					});
+				};
+
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
 	/**
 	 * Get all objectStore of given database
 	 * @param {string} database
-	 * @return {Promise}
+	 * @return {Promise<Array<string>|holdDBException>}
 	 */
 	db.getDatabaseObjectStores = function(database) {
-		return new Promise(function(resolve) {
-			db.openDB(database).then(function(/*IDBDatabase*/database) {
-				var names = database.objectStoreNames,
-					keys = Object.keys(names),
-					objects = [],
-					x;
+		return new Promise(function(resolve, reject) {
+			openDB(database).then(function(database) {
+				const names = database.objectStoreNames;
+				const keys = Object.keys(names);
+				const objects = [];
 
-				for (x = 0; x < keys.length; x++) {
+				for (let x = 0; x < keys.length; x++) {
 					objects.push(names[x]);
 				}
 
 				resolve(objects);
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
 
 	/**
 	 * Get all database names in the system
+	 * @return {Promise<Array<*>>}
 	 */
 	db.getDatabaseNames = function() {
 		return new Promise(function(resolve) {
@@ -1334,23 +1485,25 @@
 	 * Get requested keys from the objectStore
 	 * @param {string} database
 	 * @param {string} object
+	 * @param {string} [index]
+	 * @return {Promise<Array<string>|holdDBException>}
 	 */
-	db.getAllKeys = function(database, object) {
+	db.getAllKeys = function(database, object, index = undefined) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					request;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `getAllKeys transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getAllKeys transaction error`);
 				};
 
-				request = tx.objectStore(object).getAllKeys();
-				request.onsuccess = function(e) {
+				const objectStore = tx.objectStore(object);
+				const request = (index) ? objectStore.index(`idx_${index}`).getAllKeys() : objectStore.getAllKeys();
+				request.onsuccess = function() {
 					// key already exist
-					if (e.target.result !== null) {
-						resolve(e.target.result);
+					if (this.result) {
+						resolve(this.result);
 					} else {
 						resolve(false);
 					}
@@ -1359,7 +1512,10 @@
 				request.onerror = function() {
 					consoleMessage(`[${database}::${object}] getAllKeys error`, LOG_ERROR);
 				};
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1367,29 +1523,28 @@
 	 * Get data by cursor
 	 * @param {string} database
 	 * @param {string} object
-	 * @param {IDBKeyRange|null} [range]
-	 * @param {string|null} [direction]
+	 * @param {IDBValidKey|IDBKeyRange} [range]
+	 * @param {IDBCursorDirection} [direction]
 	 * @param {number} [limit]
+	 * @param {boolean} [asObject=false]
+	 * @return {Promise<Array|holdDBException>}
 	 */
-	db.getCursor = function(database, object, range, direction, limit) {
+	db.getCursor = function(database, object, range, direction, limit, asObject = false) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					result = [],
-					x = 0,
-					reverse, cursorRequest;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
+				const result = [];
+				let x = 0;
+				let reverse;
+				let cursorRequest;
 
-				if (direction === 'nextReverse') {
-					direction = 'next';
+				if (direction === IDBCursorDirection.nextReverse) {
+					direction = IDBCursorDirection.next;
 					reverse = true;
-				} else if (direction === 'prevReverse') {
-					direction = 'prev';
+				} else if (direction === IDBCursorDirection.prevReverse) {
+					direction = IDBCursorDirection.prev;
 					reverse = true;
 				}
-
-				range = range || null;
-				direction = direction || "next";
-				limit =  limit || null;
 
 				// Transaction completed
 				tx.oncomplete = function() {
@@ -1397,23 +1552,20 @@
 				};
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `getCursor transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getCursor transaction error`);
 				};
 
-				cursorRequest = tx.objectStore(object).openCursor(range, direction);
+				cursorRequest = tx.objectStore(object).openCursor(range || null, direction || IDBCursorDirection.next);
 
-				cursorRequest.onsuccess = function(evt) {
-					/**
-					 * @type {IDBCursorWithValue|null}
-					 */
-					var cursor = evt.target.result;
+				cursorRequest.onsuccess = function() {
+					const cursor = this.result;
 
-					if (cursor && (limit === null || limit !== null && x < limit)) {
+					if (cursor && (limit === undefined || x < limit)) {
 						if (reverse) {
-							result.unshift(cursor.value);
+							result.unshift(asObject ? {key: cursor.primaryKey, value: cursor.value} : cursor.value);
 						} else {
-							result.push(cursor.value);
+							result.push(asObject ? {key: cursor.primaryKey, value: cursor.value} : cursor.value);
 						}
 
 						x++;
@@ -1431,7 +1583,10 @@
 					});
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1441,47 +1596,75 @@
 	 * @param {string} object
 	 * @param {Array.<number|string>} keys
 	 * @param {boolean} [asObject=false]
+	 * @return {Promise<Array|holdDBException>}
 	 */
 	db.getKeys = function(database, object, keys, asObject) {
-		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					items = (asObject) ? {} : [],
-					cursorRequest;
+		return getKeysHandler(database, object, keys, undefined, asObject);
+	};
 
-				// Transaction completed
-				tx.oncomplete = function() {
-					resolve(items);
-				};
+	/**
+	 * Get requested keys from the objectStore
+	 * @param {string} database
+	 * @param {string} object
+	 * @param {Array.<number|string>} keys
+	 * @param {string} index
+	 * @param {boolean} [asObject=false]
+	 * @return {Promise<Array|holdDBException>}
+	 */
+	db.getKeysByIndex = function(database, object, keys, index, asObject) {
+		return getKeysHandler(database, object, keys, index, asObject);
+	};
+
+	/**
+	 * Get max primary key for object store
+	 * If there are no items then undefined returned
+	 * @param {string} database
+	 * @param {string} object
+	 * @return {Promise<number|holdDBException>}
+	 */
+	db.getMaxPrimaryKey = function(database, object) {
+		return db.getMaxKey(database, object);
+	};
+
+	/**
+	 * Get max primary key for object store
+	 * If there are no items then undefined returned
+	 * @param {string} database
+	 * @param {string} object
+	 * @param {string} [index]
+	 * @return {Promise<*|holdDBException>}
+	 */
+	db.getMaxKey = function(database, object, index = undefined) {
+		return new Promise(function(resolve, reject) {
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `getKeys transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `getKeys transaction error`);
 				};
 
-				cursorRequest = tx.objectStore(object).openCursor();
+				let objectStore = tx.objectStore(object);
+				if (index !== undefined) {
+					objectStore = objectStore.index(`idx_${index}`);
+				}
 
-				cursorRequest.onsuccess = function(evt) {
-					/**
-					 * @type IDBCursorWithValue|null
-					 */
-					var cursor = evt.target.result;
+				const cursorRequest = objectStore.openKeyCursor(null, 'prev');
+				cursorRequest.onsuccess = function() {
+					const cursor = this.result;
 
+					// Check that there is returned item or else return undefined
 					if (cursor) {
-						if (keys.indexOf(cursor.primaryKey) !== -1) {
-							if (asObject) {
-								items[cursor.primaryKey] = cursor.value;
-							} else {
-								items.push(cursor.value);
-							}
-						}
+						// If index is defined then return key else return primaryKey
+						resolve((index !== undefined) ? cursor.key : cursor.primaryKey);
 
-						cursor.continue();
+					} else {
+						resolve(undefined);
 					}
 				};
 
 				cursorRequest.onerror = function(error) {
-					consoleMessage(`[${database}::${object}] getKeys error`, LOG_ERROR);
+					consoleMessage(`[${database}::${object}] getMaxPrimaryKey error`, LOG_ERROR);
 					reject({
 						db: database,
 						storage: object,
@@ -1490,7 +1673,10 @@
 					});
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1500,16 +1686,13 @@
 	 * @param {string} object
 	 * @param {Function} handler
 	 * @param {IDBKeyRange} [range]
-	 * @param {string} [direction]
+	 * @param {IDBCursorDirection} [direction]
+	 * @return {Promise<void|holdDBException>}
 	 */
 	db.cursorWalk = function(database, object, handler, range, direction) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, R),
-					cursorRequest;
-
-				range = range || null;
-				direction = direction || "next";
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, R);
 
 				// Transaction completed
 				tx.oncomplete = function() {
@@ -1517,17 +1700,15 @@
 				};
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `cursorWalk transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `cursorWalk transaction error`);
 				};
 
-				cursorRequest = tx.objectStore(object).openCursor(range, direction);
+				const cursorRequest = tx.objectStore(object).openCursor(
+						range || null, direction || IDBCursorDirection.next);
 
-				cursorRequest.onsuccess = function(evt) {
-					/**
-					 * @type IDBCursorWithValue|null
-					 */
-					var cursor = evt.target.result;
+				cursorRequest.onsuccess = function() {
+					const cursor = this.result;
 
 					if (cursor) {
 						handler(cursor.value);
@@ -1545,24 +1726,27 @@
 					});
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
-	//noinspection ReservedWordAsName
 	/**
 	 * Delete key from objectStore
 	 * @param {string} database
 	 * @param {string} object
-	 * @param {string|Set} index
+	 * @param {string|Array|Set} index
+	 * @return {Promise<number|holdDBException>}
 	 */
 	db.delete = function(database, object, index) {
 		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, RW),
-					db = schemas[idb.name] || {},
-					objectData = db.objects[object] || false,
-					cursorRequest;
+			openDB(database, object).then(function(idb) {
+				const tx = idb.transaction(object, RW);
+				const db = schemas[idb.name] || {};
+				const objectData = db.objects[object] || false;
+				let cursorRequest;
 
 				if (objectData === false) {
 					consoleMessage(`[${database}::${object}] Delete object or virtual not defined`, LOG_ERROR);
@@ -1576,53 +1760,48 @@
 				}
 
 				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `delete transaction error`);
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `delete transaction error`);
 				};
 
-				/**
-				 * @type {IDBObjectStore}
-				 */
-				var store = tx.objectStore(object);
+				const store = tx.objectStore(object);
 
 				if (index instanceof Set) {
+					let count = 0;
 					cursorRequest = store.openKeyCursor();
-					cursorRequest.onsuccess = function(evt) {
-						/**
-						 * @type IDBCursor|null
-						 */
-						var cursor = evt.target.result;
+					cursorRequest.onsuccess = function() {
+						const cursor = this.result;
 
-						if (cursor !== null) {
+						if (cursor) {
 							if (index.has(cursor.primaryKey)) {
 								store.delete(cursor.primaryKey);
+								count++;
 							}
 
 							cursor.continue();
 
 						} else {
-							resolve();
+							resolve(count);
 						}
 					};
 
 				} else {
-					cursorRequest = store.openKeyCursor(IDBKeyRange.only(index));
-					cursorRequest.onsuccess = function(evt) {
-						/**
-						 * @type IDBCursor|null
-						 */
-						var cursor = evt.target.result;
+					cursorRequest = store.openKeyCursor(window.IDBKeyRange.only(index));
+					cursorRequest.onsuccess = function() {
+						const cursor = this.result;
 
-						if (cursor !== null) {
+						if (cursor) {
 							store.delete(cursor.primaryKey);
-						}
+							resolve(1);
 
-						resolve(false);
+						} else {
+							resolve(0);
+						}
 					};
 				}
 
-				cursorRequest.onerror = function(event) {
-					var	error = event.target.error;
+				cursorRequest.onerror = function() {
+					const error = this.error;
 
 					consoleMessage(`[${database}::${object}] Delete error [Key: ${index}] [Error: ${error.message}]`, LOG_ERROR);
 					reject({
@@ -1633,7 +1812,10 @@
 					});
 				};
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
@@ -1641,114 +1823,101 @@
 	 * Check if given object exists in database
 	 * @param {string} database
 	 * @param {string} object
-	 * @returns {Promise}
+	 * @returns {Promise<boolean|holdDBException>}
 	 */
 	db.objectStoreExists = function(database, object) {
-		return new Promise(function(resolve) {
-			db.openDB(database).then(function(/*IDBDatabase*/idb) {
-				var names = idb.objectStoreNames,
-					keys = Object.keys(idb.objectStoreNames),
-					x;
+		return new Promise(function(resolve, reject) {
+			openDB(database).then(function(idb) {
+				const names = idb.objectStoreNames;
+				const keys = Object.keys(idb.objectStoreNames);
 
-				for (x = 0; x < keys.length; x++) {
+				for (let x = 0; x < keys.length; x++) {
 					if (names[x] === object) {
 						resolve(true);
 					}
 				}
 				resolve(false);
 
-			}).catch(openDBThrownError);
+			}).catch(error => {
+				openDBThrownError(error);
+				reject(error);
+			});
 		});
 	};
 
 	/**
-	 * Update key database or insert if not existing and put was requested
-	 * @notice this function takes key value pair to update object or just key to be inserted or function to callback changes
+	 * Update key data in database
 	 * @param {string} database
 	 * @param {string} object
-	 * @param {string} key
-	 * @param {*} [value]
-	 * @param {boolean} [insert]
+	 * @param {string|number|array<string>} key
+	 * @param {*} value
+	 * @param {boolean} [asObject=false]
+	 * @return {Promise<Object|holdDBException>}
 	 */
-	db.update = function(database, object, key, value, insert) {
-		return new Promise(function(resolve, reject) {
-			db.openDB(database, object).then(function(/*IDBDatabase*/idb) {
-				var tx = idb.transaction(object, RW),
-					db = schemas[idb.name] || {},
-					objectData = db.objects[object] || false,
-					cursorRequest;
+	db.update = function(database, object, key, value, asObject = false) {
+		return updateHandler(database, object, key, value, false, asObject);
+	};
 
-				if (objectData === false) {
-					consoleMessage(`[${idb.name}::${object}] Update object or virtual not defined`, LOG_ERROR);
-					reject({
-						'db': database,
-						'storage': object,
-						'name': `IDBUpdate`,
-						'message': `Update object or virtual not defined`
-					});
-					return;
-				}
+	/**
+	 * Update key data in database or insert if does not exist
+	 * @param {string} database
+	 * @param {string} object
+	 * @param {string|number|array<string>} key
+	 * @param {*} value
+	 * @param {boolean} [asObject=false]
+	 * @return {Promise<Object|holdDBException>}
+	 */
+	db.upsert = function(database, object, key, value, asObject = false) {
+		return updateHandler(database, object, key, value, true, asObject);
+	};
 
-				// Transaction error
-				tx.onerror = function(event) {
-					transactionError(event, reject, `update transaction error`);
-				};
+	/**
+	 * Set logging wrappers
+	 * @param {function(tag: string, message)} debug
+	 * @param {function(tag: string, message)} warn
+	 * @param {function(tag: string, message)} error
+	 */
+	db.setLogging = function(debug, warn, error) {
+		log.debug = debug || log.debug;
+		log.warn = warn || log.warn;
+		log.error = error || log.error;
+	};
 
-				/**
-				 * @type {IDBObjectStore}
-				 */
-				var store = tx.objectStore(object);
+	/**
+	 * Initialize holdDB
+	 * This is done through this function so that setLogging could be called before starting of init
+	 */
+	db.initHoldDB = function() {
+		if (initialized) {
+			return;
+		}
 
-				cursorRequest = store.openCursor(IDBKeyRange.only(key));
+		// Load all created database names to memory to make sure that init has worked correctly when opening
+		if (typeof IDBObjectStore === 'function' && typeof window.IDBObjectStore.prototype.getAll !== 'undefined') {
+			consoleMessage(`holdDB start`, LOG_DEBUG);
 
-				cursorRequest.onsuccess = function(evt) {
-					/**
-					 * @type IDBCursorWithValue|null
-					 */
-					var cursor = evt.target.result;
+			db.getAll(DB_HOLD, OBJECT_HOLD_DATABASES).then(function(result) {
+				result.forEach(function(data) {
+					initializedDatabases.set(data.key, data.created);
+				});
 
-					var	storeData;
+				initPromises.forEach(function(resolve) {
+					resolve();
+				});
 
-					if (cursor !== null) {
-						storeData = (typeof value === 'function') ? value(cursor.value) : value;
+				initialized = true;
+				initPromises.length = 0;
 
-						if (objectData.keyPath) {
-							storeData[objectData.keyPath] = key;
-							cursor.update(storeData);
+				consoleMessage(`holdDB initialized`, LOG_DEBUG);
 
-						} else {
-							cursor.update(storeData, key);
-						}
+			}).catch(function(error) {
+				consoleMessage(`[${error.name}:${error.message}] Error initializing database`, LOG_ERROR);
+			});
 
-					} else if (insert === true) {
-						storeData = (typeof value === 'function') ? value(null) : value;
-						store.put(storeData, key);
-
-					} else {
-						reject({
-							'db': database,
-							'storage': object,
-							'name': `IDBUpdate`,
-							'message': `Requested key does not exist or insert not used`
-						});
-						return;
-					}
-
-					resolve(storeData);
-				};
-
-				cursorRequest.onerror = function(error) {
-					consoleMessage(`[${database}::${object}] Update error [Key: ${key}] [Error: ${error.message}]`, LOG_ERROR);
-					reject({
-						'db': database,
-						'storage': object,
-						'name': error.name,
-						'message': error.message
-					});
-				};
-
-			}).catch(openDBThrownError);
-		});
+		} else {
+			consoleMessage(`This browser is not supported`, LOG_ERROR);
+			supported = false;
+		}
 	};
 
 	// Is indexedDB not supported
@@ -1756,28 +1925,7 @@
 		return supported;
 	};
 
-	// Load all created database names to memory to make sure that init has worked correctly when opening
-	if (typeof IDBObjectStore.prototype.getAll !== "undefined") {
-		db.getAll(DB_HOLD, OBJECT_HOLD_DATABASES).then(function(result) {
-			result.forEach(function(data) {
-				initializedDatabases[data.key] = data.created;
-			});
-
-			initPromises.forEach(function(resolve) {
-				resolve();
-			});
-
-			initialized = true;
-			initPromises.length = 0;
-
-		}).catch(function(error) {
-			consoleMessage(`[${error.name}:${error.message}] Error initializing database`, LOG_ERROR);
-		});
-
-	} else {
-		consoleMessage(`This browser is not supported`, LOG_ERROR);
-		supported = false;
-	}
+	db.IDBCursorDirection = IDBCursorDirection;
 
 	// Add holdDB to window object
 	window.holdDB = db;
