@@ -39,7 +39,7 @@
  */
 
 /**
- * @typedef {{
+ * @typedef {DOMException & {
  *		target: IDBRequest
  * }} IDBTransactionError
  */
@@ -652,15 +652,16 @@
 	 * @param {IDBRequest} event
 	 * @param {function(holdDBException)} reject
 	 * @param {string} message
+	 * @param {number} [consoleLogLevel=LOG_ERROR]
 	 */
-	function transactionError(transaction, event, reject, message) {
+	function transactionError(transaction, event, reject, message, consoleLogLevel = LOG_ERROR) {
 		const error = event.error;
 
 		let database = (transaction.objectStoreNames.length > 0) ?
 				`${transaction.db.name}::${transaction.objectStoreNames[0]}` : `${transaction.db.name}`;
 
 		// Log these to server so could try to figure out how to fix like multiAdd where constraint error was the reason
-		consoleMessage(`[${database}] [${error.name} :: ${error.message}] ${message}`, LOG_ERROR);
+		consoleMessage(`${message} [${database}] [${error.name} / ${error.message}]`, consoleLogLevel);
 
 		reject({
 			'db': transaction.db.name,
@@ -1152,7 +1153,12 @@
 
 				// Transaction error
 				tx.onerror = function(/*IDBTransactionError*/event) {
-					transactionError(this, event.target, reject, `add transaction error`);
+					if (event.target.error.name === "ConstraintError") {
+						transactionError(this, event.target, reject, `holdDB::add`, LOG_WARN);
+
+					} else {
+						transactionError(this, event.target, reject, `holdDB::add`);
+					}
 				};
 
 				// Get the object store
