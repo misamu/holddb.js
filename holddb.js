@@ -678,7 +678,7 @@
 	 * @param {Array.<number|string>} keys
 	 * @param {string|boolean} [index]
 	 * @param {boolean} [asObject]
-	 * @return {Promise<Array|holdDBException>}
+	 * @return {Promise<Array>}
 	 */
 	function getKeysHandler(database, object, keys, index = undefined, asObject = false) {
 		return new Promise(function(resolve, reject) {
@@ -740,7 +740,7 @@
 	 * @param {*} [value]
 	 * @param {boolean} [insert=false]
 	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Object|holdDBException>}
+	 * @return {Promise<Object>}
 	 */
 	function updateHandler(database, object, key, value, insert = false, asObject = false) {
 		return new Promise(function(resolve, reject) {
@@ -1136,7 +1136,7 @@
 	 * @param {string} object
 	 * @param {string|number|Object} key
 	 * @param {string|Object} [value]
-	 * @return {Promise<*|holdDBException>}
+	 * @return {Promise<*>}
 	 */
 	db.add = function(database, object, key, value) {
 		return new Promise(function(resolve, reject) {
@@ -1183,7 +1183,7 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {Array.<{key:string, value:*}>|Object} items
-	 * @return {Promise<{items:number, error: number}|holdDBException>}
+	 * @return {Promise<{items:number, error: number}>}
 	 */
 	db.addMulti = function(database, object, items) {
 		return new Promise(function(resolve, reject) {
@@ -1207,7 +1207,7 @@
 
 					// add throws ConstraintError if mutation does not work for example because of index
 					if (event.target.error.name === 'ConstraintError') {
-						this.preventDefault();
+						event.target.preventDefault();
 
 					} else {
 						transactionError(this, event.target, reject, `addMulti transaction error`);
@@ -1239,7 +1239,7 @@
 	 * @param {string} object
 	 * @param {string|number|Object} key
 	 * @param {string|Object} [value]
-	 * @return {Promise<boolean|holdDBException>}
+	 * @return {Promise<boolean>}
 	 */
 	db.put = function(database, object, key, value) {
 		return new Promise(function(resolve, reject) {
@@ -1281,7 +1281,7 @@
 	 * @param {string} object
 	 * @param {string} index
 	 * @param {string|number|null} [value=null]
-	 * @return {Promise<Array<*>|holdDBException>}
+	 * @return {Promise<Array<*>>}
 	 */
 	db.getByIndex = function(database, object, index, value = null) {
 		return new Promise(function(resolve, reject) {
@@ -1321,7 +1321,7 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {string|number} key
-	 * @return {Promise<*|holdDBException>}
+	 * @return {Promise<*>}
 	 */
 	db.get = function(database, object, key) {
 		return new Promise(function(resolve, reject) {
@@ -1362,7 +1362,7 @@
 	 * @param {string} object
 	 * @param {IDBValidKey|IDBKeyRange} [keyRange]
 	 * @param {number} [limit]
-	 * @return {Promise<Array<*>|holdDBException>}
+	 * @return {Promise<Array<*>>}
 	 */
 	db.getAll = function(database, object, keyRange, limit) {
 		return new Promise(function(resolve, reject) {
@@ -1401,7 +1401,7 @@
 	 * Get single item
 	 * @param {string} database
 	 * @param {string} object
-	 * @return {Promise<{key: string|number, value: *}|holdDBException>}
+	 * @return {Promise<{key: string|number, value: *}>}
 	 */
 	db.getAny = function(database, object) {
 		return new Promise(function(resolve, reject) {
@@ -1452,7 +1452,7 @@
 	/**
 	 * Get all objectStore of given database
 	 * @param {string} database
-	 * @return {Promise<Array<string>|holdDBException>}
+	 * @return {Promise<Array<string>>}
 	 */
 	db.getDatabaseObjectStores = function(database) {
 		return new Promise(function(resolve, reject) {
@@ -1492,7 +1492,7 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {string} [index]
-	 * @return {Promise<Array<string>|holdDBException>}
+	 * @return {Promise<Array<string>>}
 	 */
 	db.getAllKeys = function(database, object, index = undefined) {
 		return new Promise(function(resolve, reject) {
@@ -1533,7 +1533,7 @@
 	 * @param {IDBCursorDirection} [direction]
 	 * @param {number} [limit]
 	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Array|holdDBException>}
+	 * @return {Promise<Array>}
 	 */
 	db.getCursor = function(database, object, range, direction, limit, asObject = false) {
 		return new Promise(function(resolve, reject) {
@@ -1602,7 +1602,7 @@
 	 * @param {string} object
 	 * @param {Array.<number|string>} keys
 	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Array|holdDBException>}
+	 * @return {Promise<Array>}
 	 */
 	db.getKeys = function(database, object, keys, asObject) {
 		return getKeysHandler(database, object, keys, undefined, asObject);
@@ -1615,7 +1615,7 @@
 	 * @param {Array.<number|string>} keys
 	 * @param {string} index
 	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Array|holdDBException>}
+	 * @return {Promise<Array>}
 	 */
 	db.getKeysByIndex = function(database, object, keys, index, asObject) {
 		return getKeysHandler(database, object, keys, index, asObject);
@@ -1626,7 +1626,7 @@
 	 * If there are no items then undefined returned
 	 * @param {string} database
 	 * @param {string} object
-	 * @return {Promise<number|holdDBException>}
+	 * @return {Promise<number>}
 	 */
 	db.getMaxPrimaryKey = function(database, object) {
 		return db.getMaxKey(database, object);
@@ -1638,7 +1638,7 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {string} [index]
-	 * @return {Promise<*|holdDBException>}
+	 * @return {Promise<*>}
 	 */
 	db.getMaxKey = function(database, object, index = undefined) {
 		return new Promise(function(resolve, reject) {
@@ -1693,7 +1693,7 @@
 	 * @param {Function} handler
 	 * @param {IDBKeyRange} [range]
 	 * @param {IDBCursorDirection} [direction]
-	 * @return {Promise<void|holdDBException>}
+	 * @return {Promise<void>}
 	 */
 	db.cursorWalk = function(database, object, handler, range, direction) {
 		return new Promise(function(resolve, reject) {
@@ -1744,7 +1744,7 @@
 	 * @param {string} database
 	 * @param {string} object
 	 * @param {string|Array|Set} index
-	 * @return {Promise<number|holdDBException>}
+	 * @return {Promise<number>}
 	 */
 	db.delete = function(database, object, index) {
 		return new Promise(function(resolve, reject) {
@@ -1829,7 +1829,7 @@
 	 * Check if given object exists in database
 	 * @param {string} database
 	 * @param {string} object
-	 * @returns {Promise<boolean|holdDBException>}
+	 * @returns {Promise<boolean>}
 	 */
 	db.objectStoreExists = function(database, object) {
 		return new Promise(function(resolve, reject) {
@@ -1858,7 +1858,7 @@
 	 * @param {string|number|array<string>} key
 	 * @param {*} value
 	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Object|holdDBException>}
+	 * @return {Promise<Object>}
 	 */
 	db.update = function(database, object, key, value, asObject = false) {
 		return updateHandler(database, object, key, value, false, asObject);
@@ -1871,7 +1871,7 @@
 	 * @param {string|number|array<string>} key
 	 * @param {*} value
 	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Object|holdDBException>}
+	 * @return {Promise<Object>}
 	 */
 	db.upsert = function(database, object, key, value, asObject = false) {
 		return updateHandler(database, object, key, value, true, asObject);
