@@ -1956,7 +1956,10 @@
 
 	//noinspection Duplicates
 	function createExport() {
-		const holdDB = Object.create(null);
+		/**
+		 * @namespace holdDB
+		 */
+		let holdDB = Object.create(null);
 
 		holdDB.IDBCursorDirection = IDBCursorDirection;
 		holdDB.add = add;
