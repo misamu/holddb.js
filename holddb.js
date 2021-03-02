@@ -933,6 +933,23 @@
 					transactionError(this, event.target, reject, `update transaction error`);
 				};
 
+				// Key not defined so try to check if this is autoincrement or keyPath defined
+				if (key === undefined) {
+					if (objectData.keyPath) {
+						key = value[objectData.keyPath];
+					}
+
+					if (key === undefined) {
+						reject({
+							'db': database,
+							'storage': object,
+							'name': `IDBUpdate`,
+							'message': `Key or keyPath not defined`
+						});
+						return;
+					}
+				}
+
 				const store = tx.objectStore(object);
 				const cursorRequest = store.openCursor(window.IDBKeyRange.only(key));
 
@@ -947,7 +964,12 @@
 
 					} else if (insert === true) {
 						storeData = (typeof value === 'function') ? value(null) : value;
-						store.put(storeData, key);
+
+						if (objectData.keyPath) {
+							store.add(storeData);
+						} else {
+							store.add(storeData, key);
+						}
 
 					} else {
 						reject({
