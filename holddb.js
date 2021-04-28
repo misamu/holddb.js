@@ -260,21 +260,6 @@
 	}
 
 	/**
-	 * openDB thrown error
-	 * @param {holdDBException} error
-	 */
-	function openDBThrownError(error) {
-		if (error.db) {
-			const target = (error.storage) ? `${error.db}::${error.storage}` : error.db;
-
-			consoleMessage(`[${target}] openDB fatal error [${error.name} / ${error.message}]`, LOG_ERROR);
-
-		} else {
-			consoleMessage(`openDB fatal error [${error.name} / ${error.message}]`, LOG_ERROR);
-		}
-	}
-
-	/**
 	 * Validate that database and ObjectStore names are good
 	 * @param {string} dbName
 	 * @param {string} objectName
@@ -322,7 +307,12 @@
 	function openDB(dbName, objectName) {
 		// Validation parses correct suffixed database name if required and this should be done only once thus
 		// call it here in openDB that should be only access point to database for client to use
-		dbName = openDBHandleValidate(dbName, objectName);
+		try {
+			dbName = openDBHandleValidate(dbName, objectName);
+		} catch (error) {
+			consoleMessage(error, LOG_ERROR);
+			return Promise.reject(error);
+		}
 
 		// Bind dbName and objectName for function and promise then adds resolve reject functions
 		return new Promise(openDBHandle.bind(null, dbName, objectName));
@@ -349,7 +339,9 @@
 					key: database,
 					created: Date.now()
 				}, database);
-			}).catch(openDBThrownError);
+			}).catch(() => {
+				// suppress error
+			});
 		}
 	}
 
@@ -436,6 +428,21 @@
 	}
 
 	/**
+	 * Parse transaction, database and object data
+	 * @param {IDBDatabase} idb
+	 * @param {string} object
+	 * @param {IDBTransactionMode} mode
+	 * @return {[]}
+	 */
+	function parseTransactionSchema(idb, object, mode) {
+		const tx = idb.transaction(object, mode);
+		const schema = schemas[idb.name] || {};
+		const schemaObject = schema.objects[object];
+
+		return [tx, schemaObject];
+	}
+
+	/**
 	 * Delete key from objectStore
 	 * @param {string} database
 	 * @param {string} object
@@ -514,10 +521,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -882,22 +886,14 @@
 				};
 
 				cursorRequest.onerror = function(error) {
-					consoleMessage(`[${database}::${object}] getKeys error`, LOG_ERROR);
-					reject({
-						db: database,
-						storage: object,
-						name: error.name,
-						message: error.message
-					});
+					const message = `[${database}::${object}] getKeys error [Error: ${error.message}]`;
+					consoleMessage(message, LOG_ERROR);
+					reject(message);
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
-
 
 	/**
 	 * Update key database or insert if not existing and put was requested
@@ -906,31 +902,17 @@
 	 * @param {string} object
 	 * @param {string|number|array<string>} key
 	 * @param {*} [value]
-	 * @param {boolean} [insert=false]
-	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Object>}
+	 * @param {string} [index=undefined]
+	 * @return {Promise<number>}
 	 */
-	function updateHandler(database, object, key, value, insert = false, asObject = false) {
+	function updateHandler(database, object, key, value, index = undefined) {
 		return new Promise(function(resolve, reject) {
 			openDB(database, object).then(function(idb) {
-				const tx = idb.transaction(object, RW);
-				const db = schemas[idb.name] || {};
-				const objectData = db.objects[object] || false;
-
-				if (objectData === false) {
-					consoleMessage(`[${idb.name}::${object}] Update object or virtual not defined`, LOG_ERROR);
-					reject({
-						'db': database,
-						'storage': object,
-						'name': `IDBUpdate`,
-						'message': `Update object or virtual not defined`
-					});
-					return;
-				}
+				const [tx, objectData] = parseTransactionSchema(idb, object, RW);
 
 				// Transaction error
 				tx.onerror = function(/*IDBTransactionError*/event) {
-					transactionError(this, event.target, reject, `update transaction error`);
+					transactionError(this, event.target, reject, `updateHandler transaction error`);
 				};
 
 				// Key not defined so try to check if this is autoincrement or keyPath defined
@@ -940,13 +922,69 @@
 					}
 
 					if (key === undefined) {
-						reject({
-							'db': database,
-							'storage': object,
-							'name': `IDBUpdate`,
-							'message': `Key or keyPath not defined`
-						});
-						return;
+						throw new Error(`Update error [DB: ${database}] [Object: ${object}] ` +
+								`[Message: Key or keyPath not defined]`);
+					}
+				}
+
+				const store = (index === undefined) ?
+						tx.objectStore(object) : tx.objectStore(object).index(`idx_${index}`);
+				const cursorRequest = store.openCursor(window.IDBKeyRange.only(key));
+
+				let updated = 0;
+
+				cursorRequest.onsuccess = function () {
+					const cursor = this.result;
+
+					if (cursor) {
+						const storeData = (typeof value === 'function') ? value(cursor.value) : value;
+						cursor.update(storeData);
+						updated++;
+						cursor.continue();
+
+					} else {
+						resolve(updated);
+					}
+				};
+
+				cursorRequest.onerror = function(error) {
+					const message = `[${database}::${object}] Update error [Key: ${key}] [Error: ${error.message}]`;
+					consoleMessage(message, LOG_ERROR);
+					reject(message);
+				};
+
+			}).catch(reject);
+		});
+	}
+
+	/**
+	 * Upsert key to database
+	 * @notice this function takes key value pair to update object or just key to be inserted or function to callback changes
+	 * @param {string} database
+	 * @param {string} object
+	 * @param {string|number|array<string>} key
+	 * @param {*} [value]
+	 * @return {Promise<number>}
+	 */
+	function upsertHandler(database, object, key, value) {
+		return new Promise((resolve, reject) => {
+			openDB(database, object).then((idb) => {
+				const [tx, objectData] = parseTransactionSchema(idb, object, RW);
+
+				// Transaction error
+				tx.onerror = function(/*IDBTransactionError*/event) {
+					transactionError(this, event.target, reject, `upsertHandler transaction error`);
+				};
+
+				// Key not defined so try to check if this is autoincrement or keyPath defined
+				if (key === undefined) {
+					if (objectData.keyPath) {
+						key = value[objectData.keyPath];
+					}
+
+					if (key === undefined) {
+						throw new Error(`Upsert error [DB: ${database}] [Object: ${object}] ` +
+								`[Message: Key or keyPath not defined]`);
 					}
 				}
 
@@ -956,48 +994,29 @@
 				cursorRequest.onsuccess = function() {
 					const cursor = this.result;
 
-					let	storeData;
-
 					if (cursor) {
-						storeData = (typeof value === 'function') ? value(cursor.value) : value;
-						cursor.update(storeData);
+						cursor.update((typeof value === 'function') ? value(cursor.value) : value);
 
-					} else if (insert === true) {
-						storeData = (typeof value === 'function') ? value(null) : value;
+					} else {
+						const storeData = (typeof value === 'function') ? value(null) : value;
 
 						if (objectData.keyPath) {
 							store.add(storeData);
 						} else {
 							store.add(storeData, key);
 						}
-
-					} else {
-						reject({
-							'db': database,
-							'storage': object,
-							'name': `IDBUpdate`,
-							'message': `Requested key does not exist`
-						});
-						return;
 					}
 
-					resolve(asObject ? {key: cursor.primaryKey || key, value: storeData} : storeData);
+					resolve(1);
 				};
 
 				cursorRequest.onerror = function(error) {
-					consoleMessage(`[${database}::${object}] Update error [Key: ${key}] [Error: ${error.message}]`, LOG_ERROR);
-					reject({
-						'db': database,
-						'storage': object,
-						'name': error.name,
-						'message': error.message
-					});
+					const message = `[${database}::${object}] Update error [Key: ${key}] [Error: ${error.message}]`;
+					consoleMessage(message, LOG_ERROR);
+					reject(message);
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1131,10 +1150,7 @@
 					resolve(this.result);
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1183,10 +1199,7 @@
 
 				resolve(objects);
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1223,10 +1236,7 @@
 							event.preventDefault();
 							reject();
 						};
-					}).catch(error => {
-						openDBThrownError(error);
-						reject(error);
-					});
+					}).catch(reject);
 
 				} else {
 					consoleMessage(`[${database}::${storeName}] delete ObjectStore does not exist`, LOG_DEBUG);
@@ -1269,10 +1279,7 @@
 						resolve(false);
 					}
 				};
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1287,10 +1294,7 @@
 			openDB(database).then(function(idb) {
 				resolve(idb.objectStoreNames.contains(objectName));
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1335,10 +1339,7 @@
 				} else {
 					request = store.add(value, /**@type {IDBValidKey}*/(key));
 				}
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1390,10 +1391,7 @@
 						store.add(items[x].value, items[x].key);
 					}
 				}
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1433,10 +1431,7 @@
 					store.put(value, /**@type {IDBValidKey}*/(key));
 				}
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1474,10 +1469,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1514,10 +1506,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1555,10 +1544,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1607,10 +1593,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1657,10 +1640,7 @@
 				request.onerror = function() {
 					consoleMessage(`[${database}::${object}] getAllKeys error`, LOG_ERROR);
 				};
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1721,10 +1701,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1800,10 +1777,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1863,10 +1837,7 @@
 					});
 				};
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -1889,37 +1860,8 @@
 				}
 				resolve(false);
 
-			}).catch(error => {
-				openDBThrownError(error);
-				reject(error);
-			});
+			}).catch(reject);
 		});
-	}
-
-	/**
-	 * Update key data in database
-	 * @param {string} database
-	 * @param {string} object
-	 * @param {string|number|array<string>} key
-	 * @param {*} value
-	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Object>}
-	 */
-	function update(database, object, key, value, asObject = false) {
-		return updateHandler(database, object, key, value, false, asObject);
-	}
-
-	/**
-	 * Update key data in database or insert if does not exist
-	 * @param {string} database
-	 * @param {string} object
-	 * @param {string|number|array<string>} key
-	 * @param {*} value
-	 * @param {boolean} [asObject=false]
-	 * @return {Promise<Object>}
-	 */
-	function upsert(database, object, key, value, asObject = false) {
-		return updateHandler(database, object, key, value, true, asObject);
 	}
 
 	/**
@@ -2030,8 +1972,8 @@
 			objectStoreUnique = key;
 		};
 
-		holdDB.upsert = upsert;
-		holdDB.update = update;
+		holdDB.upsert = upsertHandler;
+		holdDB.update = updateHandler;
 
 		return holdDB;
 	}
